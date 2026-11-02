@@ -1,0 +1,13 @@
+fastapi
+python-multipart
+sounddevice
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+python-jose[cryptography]
+pydantic-settings
+argon2-cffi
+alembic
+librosa
+resemblyzer
+opencv-python
