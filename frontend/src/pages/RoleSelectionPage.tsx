@@ -22,6 +22,7 @@ export default function RoleSelectionPage() {
           <RoleCard role="student" onSelect={selectRole} />
           <RoleCard role="teacher" onSelect={selectRole} />
         </div>
+        <p className="login-prompt"><span>Have a classroom code?</span><a href="/join">Join a classroom</a></p>
         <div className="login-prompt"><span>Already have an account?</span><a href="/login">Log in</a></div>
       </section>
 

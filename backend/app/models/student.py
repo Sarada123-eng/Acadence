@@ -5,9 +5,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.database.connection import Base
-from app.models.associations import student_subjects
+from app.models.associations import classroom_students, student_subjects
 
 if TYPE_CHECKING:
+    from app.models.classroom import Classroom
     from app.models.subject import Subject
 
 
@@ -37,6 +38,12 @@ class Student(Base):
 
     subjects: Mapped[list["Subject"]] = relationship(
         secondary=student_subjects,
+        back_populates="students",
+        passive_deletes=True,
+    )
+
+    classrooms: Mapped[list["Classroom"]] = relationship(
+        secondary=classroom_students,
         back_populates="students",
         passive_deletes=True,
     )

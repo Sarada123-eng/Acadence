@@ -3,6 +3,7 @@ import FaceRegistration from "../components/onboarding/FaceRegistration";
 import OnboardingProgress from "../components/onboarding/OnboardingProgress";
 import VoiceRegistration from "../components/onboarding/VoiceRegistration";
 import { uploadFace, uploadVoice } from "../services/biometricApi";
+import { joinClassroom } from "../api/classrooms";
 import "./BiometricSetup.css";
 
 export default function BiometricSetup() {
@@ -33,8 +34,18 @@ export default function BiometricSetup() {
 		}
 	}
 
-	function handleComplete() {
+	async function handleComplete() {
 		if (!enrolled) return;
+		const pendingJoinCode = sessionStorage.getItem("acadence.pendingJoinCode");
+		if (pendingJoinCode) {
+			try {
+				await joinClassroom(Number(studentId), pendingJoinCode);
+				sessionStorage.removeItem("acadence.pendingJoinCode");
+			} catch (error) {
+				setEnrollError(error instanceof Error ? error.message : "Unable to join the classroom.");
+				return;
+			}
+		}
 		// Navigate to next onboarding step or main dashboard
 		window.location.assign("/onboarding");
 	}

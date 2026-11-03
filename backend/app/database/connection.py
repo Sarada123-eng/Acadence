@@ -10,7 +10,10 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-engine = create_engine(settings.DATABASE_URL, echo=True)
+# The project depends on psycopg2-binary; accept the equivalent psycopg URL
+# scheme used by the local environment.
+database_url = settings.DATABASE_URL.replace("+psycopg", "+psycopg2")
+engine = create_engine(database_url, echo=True)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) # Create a new database session
 

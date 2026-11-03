@@ -3,6 +3,20 @@ from sqlalchemy.orm import Session
 from app.database.connection import get_db
 from app.services.face_service import identify_students_in_classroom
 from app.services.voice_service import identify_students_in_classroom_by_voice
+from app.schemas.classroom import (
+    ClassroomCreate,
+    ClassroomJoinRequest,
+    ClassroomJoinResponse,
+    ClassroomResponse,
+    SubjectCreate,
+    SubjectResponse,
+)
+from app.services.classroom_service import (
+    create_classroom,
+    create_subject,
+    get_teacher_classrooms,
+    join_classroom,
+)
 import cv2
 import numpy as np
 
@@ -10,6 +24,98 @@ router = APIRouter(
     prefix="/classrooms",
     tags=["Classrooms"]
 )
+
+
+@router.post(
+    "/teachers/{teacher_id}/subjects",
+    response_model=SubjectResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_teacher_subject(
+    teacher_id: int,
+    subject: SubjectCreate,
+    db: Session = Depends(get_db),
+):
+    try:
+        return create_subject(
+            db,
+            teacher_id,
+            subject.name,
+            subject.subject_code,
+            subject.section,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/subjects/{subject_id}/classrooms",
+    response_model=ClassroomResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_subject_classroom(
+    subject_id: int,
+    classroom: ClassroomCreate,
+    db: Session = Depends(get_db),
+):
+    try:
+        return create_classroom(
+            db,
+            subject_id,
+            classroom.name,
+            classroom.section,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/teachers/{teacher_id}",
+    response_model=list[ClassroomResponse],
+)
+def list_teacher_classrooms(
+    teacher_id: int,
+    db: Session = Depends(get_db),
+):
+    return get_teacher_classrooms(db, teacher_id)
+
+
+@router.post(
+    "/join",
+    response_model=ClassroomJoinResponse,
+)
+def join_classroom_by_code(
+    request: ClassroomJoinRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        classroom, newly_joined = join_classroom(
+            db,
+            request.join_code.strip(),
+            request.student_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return ClassroomJoinResponse(
+        classroom_id=classroom.id,
+        student_id=request.student_id,
+        joined=True,
+        message=(
+            "Student joined the classroom."
+            if newly_joined
+            else "Student was already enrolled in the classroom."
+        ),
+    )
 
 @router.post("/{classroom_id}/face/identify")
 async def identify_students_by_face(

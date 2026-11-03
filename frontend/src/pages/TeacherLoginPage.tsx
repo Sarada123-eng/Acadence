@@ -22,9 +22,11 @@ export default function TeacherLoginPage() {
 		setIsLoggingIn(true);
 		try {
 			const teacher = await loginTeacher({ username: username.trim(), password });
+			sessionStorage.setItem("acadence.teacherId", String(teacher.id));
+			sessionStorage.setItem("acadence.teacherName", teacher.name);
 			const message = `Login successful. Welcome back, ${teacher.name}.`;
 			setSuccessMessage(message);
-			window.alert(message);
+			window.setTimeout(() => window.location.assign("/teacher/dashboard"), 500);
 		} catch (error) {
 			setApiError(error instanceof Error ? error.message : "Login failed. Please try again.");
 		} finally {

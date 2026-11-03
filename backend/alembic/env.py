@@ -14,6 +14,7 @@ from app.database.connection import Base, settings
 from app.models.student import Student  # noqa: F401
 from app.models.subject import Subject  # noqa: F401
 from app.models.teacher import Teacher  # noqa: F401
+from app.models.classroom import Classroom  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -31,7 +32,10 @@ target_metadata = Base.metadata
 
 # Use the application's configured database URL instead of storing credentials
 # in alembic.ini.
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
+config.set_main_option(
+    "sqlalchemy.url",
+    settings.DATABASE_URL.replace("+psycopg", "+psycopg2").replace("%", "%%"),
+)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

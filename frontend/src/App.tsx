@@ -4,18 +4,8 @@ import TeacherRegisterPage from "./pages/TeacherRegisterPage";
 import TeacherLoginPage from "./pages/TeacherLoginPage";
 import StudentOnboardingPage from "./pages/StudentOnboardingPage";
 import BiometricSetup from "./pages/BiometricSetup";
-
-function PlaceholderPage({ title, description }: { title: string; description: string }) {
-	return (
-		<main className="route-placeholder">
-			<a className="route-placeholder__back" href="/onboarding">← Back to role selection</a>
-			<img src="/images/acadence-logo.png" alt="Acadence — People, Learning, Integrity" />
-			<p className="label">ACADENCE</p>
-			<h1>{title}</h1>
-			<p>{description}</p>
-		</main>
-	);
-}
+import StudentJoinPage from "./pages/StudentJoinPage";
+import TeacherDashboardPage from "./pages/TeacherDashboardPage";
 
 export default function App() {
 	const path = window.location.pathname;
@@ -24,6 +14,7 @@ export default function App() {
 	if (path === "/auth/student") {
 		return <StudentOnboardingPage />;
 	}
+	if (path === "/join") return <StudentJoinPage />;
 	if (path === "/auth/student/biometrics") {
 		return <BiometricSetup />;
 	}
@@ -34,7 +25,7 @@ export default function App() {
 		return <TeacherLoginPage />;
 	}
 	if (path === "/teacher/dashboard") {
-		return <PlaceholderPage title="Teacher dashboard" description="Your classroom workspace will live here." />;
+		return <TeacherDashboardPage />;
 	}
 
 	return <Page />;
