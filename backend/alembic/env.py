@@ -34,7 +34,11 @@ target_metadata = Base.metadata
 # in alembic.ini.
 config.set_main_option(
     "sqlalchemy.url",
-    settings.DATABASE_URL.replace("+psycopg", "+psycopg2").replace("%", "%%"),
+    (
+        settings.DATABASE_URL
+        if "+psycopg2" in settings.DATABASE_URL
+        else settings.DATABASE_URL.replace("+psycopg", "+psycopg2")
+    ).replace("%", "%%"),
 )
 
 # other values from the config, defined by the needs of env.py,

@@ -1,12 +1,19 @@
+from datetime import datetime, timedelta, timezone
+
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.database.connection import Settings, get_db, settings
 from app.models.teacher import Teacher
 
 password_hasher = PasswordHasher()
+bearer_scheme = HTTPBearer(auto_error=False)
 
 def hash_password(password: str) -> str:
     return password_hasher.hash(password)
@@ -41,3 +48,59 @@ def teacher_login(db: Session, username: str, password: str) -> Teacher | None:
     if teacher and verify_password(password, teacher.password_hash):
         return teacher
     return None
+
+
+def create_access_token(
+    teacher: Teacher,
+    jwt_settings: Settings = settings,
+) -> str:
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=jwt_settings.ACCESS_TOKEN_EXPIRE_MINUTES,
+    )
+    payload = {
+        "sub": str(teacher.id),
+        "role": "teacher",
+        "exp": expires_at,
+    }
+    return jwt.encode(
+        payload,
+        jwt_settings.JWT_SECRET_KEY,
+        algorithm=jwt_settings.JWT_ALGORITHM,
+    )
+
+
+def get_current_teacher(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> Teacher:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate teacher credentials.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if credentials is None:
+        raise credentials_exception
+
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        if payload.get("role") != "teacher":
+            raise credentials_exception
+
+        subject = payload.get("sub")
+        if not isinstance(subject, str) or not subject.isdigit():
+            raise credentials_exception
+
+        teacher_id = int(subject)
+    except (JWTError, ValueError):
+        raise credentials_exception from None
+
+    teacher = db.get(Teacher, teacher_id)
+    if teacher is None:
+        raise credentials_exception
+
+    return teacher

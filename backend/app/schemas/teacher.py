@@ -33,3 +33,8 @@ class TeacherResponse(BaseModel):
     name: str
 
     model_config = {"from_attributes": True}
+
+
+class TeacherTokenResponse(TeacherResponse):
+    access_token: str
+    token_type: str

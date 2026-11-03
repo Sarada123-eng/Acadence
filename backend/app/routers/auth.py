@@ -2,8 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session # Session is a class that represents a database session. It is used to interact with the database and perform CRUD operations.
 
 from app.database.connection import get_db
-from app.schemas.teacher import TeacherLogin, TeacherRegister, TeacherResponse
-from app.services.auth import get_teacher_by_username, teacher_login, create_teacher
+from app.models.teacher import Teacher
+from app.schemas.teacher import (
+    TeacherLogin,
+    TeacherRegister,
+    TeacherResponse,
+    TeacherTokenResponse,
+)
+from app.services.auth import (
+    create_access_token,
+    create_teacher,
+    get_current_teacher,
+    get_teacher_by_username,
+    teacher_login,
+)
 
 router = APIRouter(
     prefix="/auth",
@@ -27,7 +39,7 @@ def register_teacher(teacher: TeacherRegister, db: Session = Depends(get_db)):# 
 
 @router.post(
     "/teacher/login",
-    response_model=TeacherResponse
+    response_model=TeacherTokenResponse,
 )
 def login_teacher(teacher: TeacherLogin, db: Session = Depends(get_db)):
     logged_in_teacher = teacher_login(db, teacher.username, teacher.password)
@@ -36,4 +48,20 @@ def login_teacher(teacher: TeacherLogin, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password"
         )
-    return logged_in_teacher
+    return TeacherTokenResponse(
+        id=logged_in_teacher.id,
+        username=logged_in_teacher.username,
+        name=logged_in_teacher.name,
+        access_token=create_access_token(logged_in_teacher),
+        token_type="bearer",
+    )
+
+
+@router.get(
+    "/teacher/me",
+    response_model=TeacherResponse,
+)
+def get_teacher_profile(
+    current_teacher: Teacher = Depends(get_current_teacher),
+):
+    return current_teacher
