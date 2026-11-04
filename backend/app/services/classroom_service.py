@@ -36,10 +36,13 @@ def create_classroom(
     subject_id: int,
     name: str,
     section: str | None,
+    teacher_id: int,
 ) -> Classroom:
     subject = db.get(Subject, subject_id)
     if subject is None:
         raise ValueError(f"Subject with ID {subject_id} does not exist.")
+    if subject.teacher_id != teacher_id:
+        raise PermissionError("You do not own this subject.")
 
     classroom = Classroom(
         name=name,

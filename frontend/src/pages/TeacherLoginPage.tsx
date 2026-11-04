@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { loginTeacher } from "../api/auth";
+import { loginTeacher, setAccessToken } from "../api/auth";
 import HandwrittenNote from "../components/onboarding/HandwrittenNote";
 import "./TeacherLoginPage.css";
 
@@ -22,7 +22,7 @@ export default function TeacherLoginPage() {
 		setIsLoggingIn(true);
 		try {
 			const teacher = await loginTeacher({ username: username.trim(), password });
-			sessionStorage.setItem("acadence.teacherId", String(teacher.id));
+			setAccessToken(teacher.access_token);
 			sessionStorage.setItem("acadence.teacherName", teacher.name);
 			const message = `Login successful. Welcome back, ${teacher.name}.`;
 			setSuccessMessage(message);

@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 from app.database.connection import get_db
+from app.models.teacher import Teacher
 from app.services.face_service import identify_students_in_classroom
 from app.services.voice_service import identify_students_in_classroom_by_voice
+from app.services.auth import get_current_teacher
 from app.schemas.classroom import (
     ClassroomCreate,
     ClassroomJoinRequest,
@@ -27,19 +29,19 @@ router = APIRouter(
 
 
 @router.post(
-    "/teachers/{teacher_id}/subjects",
+    "/subjects",
     response_model=SubjectResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def create_teacher_subject(
-    teacher_id: int,
     subject: SubjectCreate,
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
     try:
         return create_subject(
             db,
-            teacher_id,
+            current_teacher.id,
             subject.name,
             subject.subject_code,
             subject.section,
@@ -59,6 +61,7 @@ def create_teacher_subject(
 def create_subject_classroom(
     subject_id: int,
     classroom: ClassroomCreate,
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
     try:
@@ -67,7 +70,13 @@ def create_subject_classroom(
             subject_id,
             classroom.name,
             classroom.section,
+            current_teacher.id,
         )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -76,14 +85,14 @@ def create_subject_classroom(
 
 
 @router.get(
-    "/teachers/{teacher_id}",
+    "",
     response_model=list[ClassroomResponse],
 )
 def list_teacher_classrooms(
-    teacher_id: int,
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
-    return get_teacher_classrooms(db, teacher_id)
+    return get_teacher_classrooms(db, current_teacher.id)
 
 
 @router.post(

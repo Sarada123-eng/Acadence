@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+import { authenticatedRequest } from "./auth";
 
 export type SubjectData = {
 	name: string;
@@ -25,31 +25,12 @@ export type ClassroomResponse = ClassroomData & {
 	updated_at: string;
 };
 
-type ApiError = { detail?: string };
-
 async function request<T>(path: string, init: RequestInit): Promise<T> {
-	let response: Response;
-	try {
-		response = await fetch(`${API_BASE_URL}${path}`, init);
-	} catch {
-		throw new Error("Unable to reach Acadence. Please check that the server is running.");
-	}
-
-	let payload: ApiError & Partial<T> = {};
-	try {
-		payload = await response.json();
-	} catch {
-		// The status-based error below is used when the server has no JSON body.
-	}
-
-	if (!response.ok) {
-		throw new Error(payload.detail ?? "The request could not be completed.");
-	}
-	return payload as T;
+	return authenticatedRequest<T>(path, init);
 }
 
-export function createSubject(teacherId: number, data: SubjectData) {
-	return request<SubjectResponse>(`/classrooms/teachers/${teacherId}/subjects`, {
+export function createSubject(data: SubjectData) {
+	return request<SubjectResponse>("/classrooms/subjects", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(data),
@@ -64,8 +45,8 @@ export function createClassroom(subjectId: number, data: ClassroomData) {
 	});
 }
 
-export function listTeacherClassrooms(teacherId: number) {
-	return request<ClassroomResponse[]>(`/classrooms/teachers/${teacherId}`, {
+export function listTeacherClassrooms() {
+	return request<ClassroomResponse[]>("/classrooms", {
 		method: "GET",
 	});
 }

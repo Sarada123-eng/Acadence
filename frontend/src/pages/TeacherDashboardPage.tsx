@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { getCurrentTeacher } from "../api/auth";
 import { createClassroom, createSubject, listTeacherClassrooms, type ClassroomResponse } from "../api/classrooms";
 
 export default function TeacherDashboardPage() {
-	const teacherId = Number(sessionStorage.getItem("acadence.teacherId"));
 	const [classrooms, setClassrooms] = useState<ClassroomResponse[]>([]);
 	const [subjectName, setSubjectName] = useState("");
 	const [subjectCode, setSubjectCode] = useState("");
@@ -11,17 +11,18 @@ export default function TeacherDashboardPage() {
 	const [error, setError] = useState("");
 
 	useEffect(() => {
-		if (teacherId) {
-			listTeacherClassrooms(teacherId).then(setClassrooms).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to load classrooms."));
-		}
-	}, [teacherId]);
+		getCurrentTeacher()
+			.then(() => listTeacherClassrooms())
+			.then(setClassrooms)
+			.catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to load classrooms."));
+	}, []);
 
 	async function handleSubmit(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 		setError("");
 		setMessage("");
 		try {
-			const subject = await createSubject(teacherId, { name: subjectName.trim(), subject_code: subjectCode.trim() });
+			const subject = await createSubject({ name: subjectName.trim(), subject_code: subjectCode.trim() });
 			const classroom = await createClassroom(subject.id, { name: classroomName.trim() });
 			setClassrooms((current) => [...current, classroom]);
 			setMessage(`Classroom created. Join code: ${classroom.join_code}`);
@@ -32,8 +33,6 @@ export default function TeacherDashboardPage() {
 			setError(reason instanceof Error ? reason.message : "Unable to create classroom.");
 		}
 	}
-
-	if (!teacherId) return <main className="classroom-entry"><section className="classroom-entry__card"><h1>Teacher login required</h1><a href="/login">Go to login</a></section></main>;
 
 	return (
 		<main className="classroom-entry">
