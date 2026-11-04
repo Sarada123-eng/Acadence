@@ -1,4 +1,4 @@
-import { authenticatedRequest } from "./auth";
+import { authenticatedRequest, publicRequest } from "./auth";
 
 export type SubjectData = {
 	name: string;
@@ -52,7 +52,7 @@ export function listTeacherClassrooms() {
 }
 
 export function joinClassroom(studentId: number, joinCode: string) {
-	return request<{ classroom_id: number; student_id: number; joined: boolean; message: string }>("/classrooms/join", {
+	return publicRequest<{ classroom_id: number; student_id: number; joined: boolean; message: string }>("/classrooms/join", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ student_id: studentId, join_code: joinCode }),

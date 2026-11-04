@@ -139,6 +139,27 @@ export async function authenticatedRequest<T>(path: string, init: RequestInit = 
 	return payload as T;
 }
 
+export async function publicRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+	let response: Response;
+	try {
+		response = await fetch(`${API_BASE_URL}${path}`, init);
+	} catch {
+		throw new Error("Unable to reach Acadence. Please check that the server is running.");
+	}
+
+	let payload: FastAPIError & Partial<T> = {};
+	try {
+		payload = await response.json();
+	} catch {
+		// The status-based error below is used when the server has no JSON body.
+	}
+
+	if (!response.ok) {
+		throw new Error(getErrorMessage(payload, response.status, "The request could not be completed."));
+	}
+	return payload as T;
+}
+
 export function getCurrentTeacher() {
 	return authenticatedRequest<TeacherProfile>("/auth/teacher/me");
 }
