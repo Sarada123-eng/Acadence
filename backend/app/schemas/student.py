@@ -4,14 +4,31 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
-class StudentCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=100)
-
-
 class StudentRegistrationCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     institutional_student_id: str = Field(min_length=1, max_length=100)
     institutional_email: str = Field(min_length=3, max_length=320)
+
+    @field_validator("name", "institutional_student_id", mode="before")
+    @classmethod
+    def trim_identity_values(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        return value.strip()
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not 2 <= len(value) <= 100:
+            raise ValueError("Name must contain between 2 and 100 characters.")
+        return value
+
+    @field_validator("institutional_student_id")
+    @classmethod
+    def validate_student_id(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Institutional student ID cannot be empty.")
+        return value
 
     @field_validator("institutional_email")
     @classmethod
@@ -33,10 +50,3 @@ class StudentRegistrationResponse(BaseModel):
     registration_reference: UUID
     account_status: str
     pending_registration_expires_at: datetime
-
-
-class StudentResponse(BaseModel):
-    id: int
-    name: str
-    face_embedding_enrolled: bool
-    voice_embedding_enrolled: bool

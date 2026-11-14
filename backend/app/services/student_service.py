@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database.connection import Settings, settings
-from app.models.student import PENDING_VERIFICATION_STATUS, Student
+from app.models.student import ACTIVE_STATUS, PENDING_VERIFICATION_STATUS, Student
 from app.models.student import normalize_email, normalize_student_id
 
 
@@ -27,22 +27,10 @@ GENERIC_REGISTRATION_CONFLICT = (
 )
 
 
-def create_student(db: Session, name: str) -> Student:
-    student = Student(
-        name=name,
-        face_embedding=None,
-        voice_embedding=None,
-    )
-    db.add(student)
-    db.commit()
-    db.refresh(student)
-    return student
-
-
 def ensure_student_can_use_existing_features(student: Student) -> None:
-    if student.account_status == PENDING_VERIFICATION_STATUS:
+    if student.account_status != ACTIVE_STATUS:
         raise StudentNotEligibleError(
-            "Student verification is required before this operation."
+            "Student account is not active."
         )
 
 
@@ -76,8 +64,10 @@ def _pending_registration_is_expired(
 ) -> bool:
     return (
         student.account_status == PENDING_VERIFICATION_STATUS
-        and student.pending_registration_expires_at is not None
-        and student.pending_registration_expires_at <= now
+        and (
+            student.pending_registration_expires_at is None
+            or student.pending_registration_expires_at <= now
+        )
     )
 
 
@@ -160,7 +150,9 @@ def register_pending_student(
     expires_at = now + timedelta(
         minutes=app_settings.PENDING_REGISTRATION_EXPIRE_MINUTES,
     )
-    student = reusable_student or Student()
+    student = reusable_student or Student(
+        account_status=PENDING_VERIFICATION_STATUS,
+    )
     student.name = name.strip()
     student.institutional_student_id = institutional_student_id.strip()
     student.normalized_student_id = normalized_student_id

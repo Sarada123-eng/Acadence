@@ -3,10 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.schemas.student import (
-    StudentCreate,
     StudentRegistrationCreate,
     StudentRegistrationResponse,
-    StudentResponse,
 )
 from app.services.student_service import (
     StudentRegistrationConfigurationError,
@@ -15,25 +13,7 @@ from app.services.student_service import (
 )
 
 
-router = APIRouter(
-    prefix="/students",
-    tags=["Students"],
-)
-
-
-@router.post(
-    "",
-    response_model=StudentResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def register_student(
-    student: StudentCreate,
-    db: Session = Depends(get_db),
-) -> StudentResponse:
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="Name-only student registration is no longer available.",
-    )
+router = APIRouter(prefix="/students", tags=["Students"])
 
 
 @router.post(

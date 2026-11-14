@@ -9,7 +9,6 @@ from app.database.connection import Base
 from app.models.associations import classroom_students, student_subjects
 
 
-LEGACY_UNVERIFIED_STATUS = "legacy_unverified"
 PENDING_VERIFICATION_STATUS = "pending_verification"
 ACTIVE_STATUS = "active"
 SUSPENDED_STATUS = "suspended"
@@ -17,7 +16,6 @@ DEACTIVATED_STATUS = "deactivated"
 STUDENT_REGISTRATION_REFERENCE_LENGTH = 36
 
 STUDENT_ACCOUNT_STATUSES = (
-    LEGACY_UNVERIFIED_STATUS,
     PENDING_VERIFICATION_STATUS,
     ACTIVE_STATUS,
     SUSPENDED_STATUS,
@@ -45,7 +43,7 @@ class Student(Base):
     __table_args__ = (
         CheckConstraint(
             "account_status IN "
-            "('legacy_unverified', 'pending_verification', 'active', "
+            "('pending_verification', 'active', "
             "'suspended', 'deactivated')",
             name="ck_students_account_status",
         ),
@@ -110,8 +108,6 @@ class Student(Base):
     account_status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
-        default=LEGACY_UNVERIFIED_STATUS,
-        server_default=LEGACY_UNVERIFIED_STATUS,
         index=False,
     )
 

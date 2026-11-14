@@ -16,10 +16,18 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from app.database.connection import Settings, get_db
 from app.main import app
-from app.models.student import PENDING_VERIFICATION_STATUS, Student
+from app.models.student import (
+    ACTIVE_STATUS,
+    DEACTIVATED_STATUS,
+    PENDING_VERIFICATION_STATUS,
+    SUSPENDED_STATUS,
+    Student,
+)
 from app.routers import students as students_router
 from app.services.student_service import (
     StudentRegistrationConfigurationError,
+    StudentNotEligibleError,
+    ensure_student_can_use_existing_features,
     register_pending_student,
 )
 
@@ -146,6 +154,62 @@ class StudentRegistrationServiceTests(unittest.TestCase):
         self.assertNotEqual(result.registration_reference, "old-reference")
         self.db.commit.assert_called_once()
 
+    def test_missing_expiry_is_reused_only_without_established_data(self) -> None:
+        existing = Student(
+            name="Old Name",
+            normalized_student_id="S001",
+            normalized_email="old@example.edu",
+            account_status=PENDING_VERIFICATION_STATUS,
+            pending_registration_expires_at=None,
+        )
+        self.db.scalars.return_value.all.return_value = [existing]
+
+        result = register_pending_student(
+            self.db,
+            "New Name",
+            "S001",
+            "new@example.edu",
+            self.settings,
+        )
+
+        self.assertIs(result, existing)
+        self.assertIsNotNone(result.pending_registration_expires_at)
+
+    def test_missing_expiry_with_established_data_is_not_reused(self) -> None:
+        existing = Student(
+            name="Old Name",
+            normalized_student_id="S001",
+            normalized_email="old@example.edu",
+            account_status=PENDING_VERIFICATION_STATUS,
+            pending_registration_expires_at=None,
+            face_embedding=[0.1],
+        )
+        self.db.scalars.return_value.all.return_value = [existing]
+
+        with self.assertRaisesRegex(ValueError, "Registration could not be completed"):
+            register_pending_student(
+                self.db,
+                "New Name",
+                "S001",
+                "new@example.edu",
+                self.settings,
+            )
+
+    def test_only_active_students_can_use_existing_features(self) -> None:
+        for account_status in (
+            PENDING_VERIFICATION_STATUS,
+            SUSPENDED_STATUS,
+            DEACTIVATED_STATUS,
+        ):
+            with self.subTest(account_status=account_status):
+                with self.assertRaises(StudentNotEligibleError):
+                    ensure_student_can_use_existing_features(
+                        Student(account_status=account_status)
+                    )
+
+        ensure_student_can_use_existing_features(
+            Student(account_status=ACTIVE_STATUS)
+        )
 
 class StudentRegistrationApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -195,14 +259,37 @@ class StudentRegistrationApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["account_status"], PENDING_VERIFICATION_STATUS)
         self.assertNotIn("id", body)
 
-    async def test_name_only_registration_is_rejected(self) -> None:
+    async def test_name_only_registration_route_no_longer_exists(self) -> None:
         response = await self.request(
             "POST",
             "/students",
             json={"name": "Student Name"},
         )
 
-        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.status_code, 404)
+
+    async def test_registration_trims_and_validates_name_and_student_id(self) -> None:
+        response = await self.request(
+            "POST",
+            "/students/registrations",
+            json={
+                "name": "   ",
+                "institutional_student_id": "S001",
+                "institutional_email": "student@example.edu",
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+
+        response = await self.request(
+            "POST",
+            "/students/registrations",
+            json={
+                "name": " A ",
+                "institutional_student_id": "   ",
+                "institutional_email": "student@example.edu",
+            },
+        )
+        self.assertEqual(response.status_code, 422)
 
     async def test_invalid_registration_request_is_rejected(self) -> None:
         response = await self.request(
@@ -237,6 +324,20 @@ class StudentRegistrationApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "Student registration is not configured.")
+
+
+class StudentSettingsTests(unittest.TestCase):
+    def test_registration_expiry_must_be_positive(self) -> None:
+        base = {
+            "DATABASE_URL": "sqlite+pysqlite:///:memory:",
+            "JWT_SECRET_KEY": "test-only-secret",
+        }
+        Settings(**base, PENDING_REGISTRATION_EXPIRE_MINUTES=1)
+
+        for value in (0, -1):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    Settings(**base, PENDING_REGISTRATION_EXPIRE_MINUTES=value)
 
 
 class PendingRegistrationMigrationTests(unittest.TestCase):

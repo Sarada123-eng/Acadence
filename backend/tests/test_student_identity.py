@@ -14,7 +14,6 @@ os.environ.setdefault("JWT_ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
 
 from app.models.student import (
-    LEGACY_UNVERIFIED_STATUS,
     Student,
     normalize_email,
     normalize_student_id,
@@ -39,14 +38,7 @@ def load_migration():
 
 
 class StudentIdentityModelTests(unittest.TestCase):
-    def test_existing_name_only_student_creation_remains_compatible(self) -> None:
-        student = Student(name="Legacy Student")
-
-        self.assertEqual(student.name, "Legacy Student")
-        self.assertIsNone(student.face_embedding)
-        self.assertIsNone(student.voice_embedding)
-
-    def test_identity_fields_are_nullable_and_status_has_legacy_default(self) -> None:
+    def test_identity_fields_are_nullable_without_an_account_status_default(self) -> None:
         columns = Student.__table__.c
 
         for column_name in (
@@ -60,10 +52,8 @@ class StudentIdentityModelTests(unittest.TestCase):
             self.assertTrue(columns[column_name].nullable)
 
         self.assertFalse(columns.account_status.nullable)
-        self.assertEqual(
-            columns.account_status.default.arg,
-            LEGACY_UNVERIFIED_STATUS,
-        )
+        self.assertIsNone(columns.account_status.default)
+        self.assertIsNone(columns.account_status.server_default)
 
     def test_normalization_preserves_identifiers_and_is_deterministic(self) -> None:
         self.assertEqual(normalize_student_id("  Ab-001  "), "Ab-001")
@@ -125,7 +115,7 @@ class StudentIdentityMigrationTests(unittest.TestCase):
         self.assertEqual(row["name"], "Legacy Student")
         self.assertEqual(row["face_embedding"], [0.1, 0.2])
         self.assertEqual(row["voice_embedding"], [0.3, 0.4])
-        self.assertEqual(row["account_status"], LEGACY_UNVERIFIED_STATUS)
+        self.assertEqual(row["account_status"], "legacy_unverified")
         self.assertIsNone(row["institutional_student_id"])
         self.assertIsNone(row["normalized_email"])
 
