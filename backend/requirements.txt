@@ -8,6 +8,7 @@ python-jose[cryptography]
 pydantic-settings
 argon2-cffi
 alembic
+httpx2
 librosa
 resemblyzer
 opencv-python

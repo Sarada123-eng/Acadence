@@ -2,6 +2,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models.student import Student
+from app.services.student_service import ensure_student_can_use_existing_features
 from app.repositories.biometric_repository import get_classroom_biometric_embeddings
 from app.pipelines.face.face_pipeline import extract_face_embeddings
 from app.pipelines.face.classifier import FaceClassifier
@@ -24,6 +25,7 @@ def enroll_student_face_embedding(
         raise ValueError(
             f"Student with ID {student_id} does not exist."
         )
+    ensure_student_can_use_existing_features(student)
 
 
     embeddings = extract_face_embeddings(image)
@@ -66,6 +68,7 @@ def verify_student_face_embedding(
         raise ValueError(
             f"Student with ID {student_id} does not exist."
         )
+    ensure_student_can_use_existing_features(student)
 
     if student.face_embedding is None:
         raise ValueError(

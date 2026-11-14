@@ -7,6 +7,7 @@ from app.models.classroom import Classroom
 from app.models.student import Student
 from app.models.subject import Subject
 from app.models.teacher import Teacher
+from app.services.student_service import ensure_student_can_use_existing_features
 
 
 def create_subject(
@@ -80,16 +81,15 @@ def join_classroom(
     if classroom is None:
         raise ValueError("Classroom join code is invalid or inactive.")
 
-    if db.get(Student, student_id) is None:
+    student = db.get(Student, student_id)
+    if student is None:
         raise ValueError(f"Student with ID {student_id} does not exist.")
+    ensure_student_can_use_existing_features(student)
 
     already_joined = any(
         student.id == student_id for student in classroom.students
     )
     if not already_joined:
-        student = db.get(Student, student_id)
-        if student is None:
-            raise ValueError(f"Student with ID {student_id} does not exist.")
         classroom.students.append(student)
         db.commit()
 

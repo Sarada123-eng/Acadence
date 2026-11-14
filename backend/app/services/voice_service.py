@@ -4,6 +4,7 @@ import librosa
 from sqlalchemy.orm import Session
 
 from app.models.student import Student
+from app.services.student_service import ensure_student_can_use_existing_features
 from app.repositories.biometric_repository import get_classroom_biometric_embeddings
 from app.pipelines.voice.pipeline import process_audio_segment
 from app.pipelines.voice.similarity import (
@@ -29,6 +30,7 @@ def enroll_student_voice_embedding(
         raise ValueError(
             f"Student with ID {student_id} does not exist."
         )
+    ensure_student_can_use_existing_features(student)
 
     # Load the audio from bytes
     audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
@@ -57,6 +59,7 @@ def verify_student_voice_embedding(
         raise ValueError(
             f"Student with ID {student_id} does not exist."
         )
+    ensure_student_can_use_existing_features(student)
 
     if student.voice_embedding is None:
         raise ValueError(

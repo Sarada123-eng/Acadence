@@ -1,9 +1,18 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
-from app.schemas.student import StudentCreate, StudentResponse
-from app.services.student_service import create_student
+from app.schemas.student import (
+    StudentCreate,
+    StudentRegistrationCreate,
+    StudentRegistrationResponse,
+    StudentResponse,
+)
+from app.services.student_service import (
+    StudentRegistrationConfigurationError,
+    StudentRegistrationValidationError,
+    register_pending_student,
+)
 
 
 router = APIRouter(
@@ -21,11 +30,46 @@ def register_student(
     student: StudentCreate,
     db: Session = Depends(get_db),
 ) -> StudentResponse:
-    created_student = create_student(db, student.name)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Name-only student registration is no longer available.",
+    )
 
-    return StudentResponse(
-        id=created_student.id,
-        name=created_student.name,
-        face_embedding_enrolled=created_student.face_embedding is not None,
-        voice_embedding_enrolled=created_student.voice_embedding is not None,
+
+@router.post(
+    "/registrations",
+    response_model=StudentRegistrationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register_pending_student_account(
+    student: StudentRegistrationCreate,
+    db: Session = Depends(get_db),
+) -> StudentRegistrationResponse:
+    try:
+        created_student = register_pending_student(
+            db,
+            student.name,
+            student.institutional_student_id,
+            student.institutional_email,
+        )
+    except StudentRegistrationConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except StudentRegistrationValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    return StudentRegistrationResponse(
+        registration_reference=created_student.registration_reference,
+        account_status=created_student.account_status,
+        pending_registration_expires_at=created_student.pending_registration_expires_at,
     )

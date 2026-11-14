@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.database.connection import get_db
 import cv2
 from app.services.face_service import enroll_student_face_embedding, verify_student_face_embedding
+from app.services.student_service import StudentNotEligibleError
 import numpy as np
 
 router = APIRouter(
@@ -49,6 +50,11 @@ async def enroll_student_face(
         )
 
         return {"message": "Face embedding enrolled successfully."}
+    except StudentNotEligibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -94,6 +100,11 @@ async def verify_student_face(
         )
 
         return {"verified": is_verified}
+    except StudentNotEligibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

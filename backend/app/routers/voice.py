@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 from app.database.connection import get_db
 from app.services.voice_service import enroll_student_voice_embedding, verify_student_voice_embedding
+from app.services.student_service import StudentNotEligibleError
 
 router = APIRouter(
     prefix="/students",
@@ -30,6 +31,11 @@ async def enroll_voice(
         )
 
         return {"message": "Voice embedding enrolled successfully."}
+    except StudentNotEligibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -58,6 +64,11 @@ async def verify_student_voice(
         )
 
         return {"verified": is_verified}
+    except StudentNotEligibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

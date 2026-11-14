@@ -1,8 +1,7 @@
 from typing import TYPE_CHECKING
 
 from datetime import datetime
-
-from sqlalchemy import DateTime, Index, String
+from sqlalchemy import CheckConstraint, DateTime, Index, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -15,6 +14,7 @@ PENDING_VERIFICATION_STATUS = "pending_verification"
 ACTIVE_STATUS = "active"
 SUSPENDED_STATUS = "suspended"
 DEACTIVATED_STATUS = "deactivated"
+STUDENT_REGISTRATION_REFERENCE_LENGTH = 36
 
 STUDENT_ACCOUNT_STATUSES = (
     LEGACY_UNVERIFIED_STATUS,
@@ -43,6 +43,12 @@ if TYPE_CHECKING:
 class Student(Base):
     __tablename__ = "students"
     __table_args__ = (
+        CheckConstraint(
+            "account_status IN "
+            "('legacy_unverified', 'pending_verification', 'active', "
+            "'suspended', 'deactivated')",
+            name="ck_students_account_status",
+        ),
         Index(
             "uq_students_normalized_student_id",
             "normalized_student_id",
@@ -54,6 +60,11 @@ class Student(Base):
             unique=True,
         ),
         Index("ix_students_account_status", "account_status"),
+        Index(
+            "uq_students_registration_reference",
+            "registration_reference",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(
@@ -83,6 +94,16 @@ class Student(Base):
 
     normalized_email: Mapped[str | None] = mapped_column(
         String(320),
+        nullable=True,
+    )
+
+    registration_reference: Mapped[str | None] = mapped_column(
+        String(STUDENT_REGISTRATION_REFERENCE_LENGTH),
+        nullable=True,
+    )
+
+    pending_registration_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
     )
 

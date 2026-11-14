@@ -19,6 +19,7 @@ from app.services.classroom_service import (
     get_teacher_classrooms,
     join_classroom,
 )
+from app.services.student_service import StudentNotEligibleError
 import cv2
 import numpy as np
 
@@ -109,6 +110,11 @@ def join_classroom_by_code(
             request.join_code.strip(),
             request.student_id,
         )
+    except StudentNotEligibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
