@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     STUDENT_ALLOWED_EMAIL_DOMAINS: str = ""
     PENDING_REGISTRATION_EXPIRE_MINUTES: int = Field(default=30, gt=0)
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM_ADDRESS: str = ""
+    EMAIL_FROM_NAME: str = ""
 
     class Config:
         env_file = ".env"

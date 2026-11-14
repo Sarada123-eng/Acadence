@@ -9,6 +9,7 @@ pydantic-settings
 argon2-cffi
 alembic
 httpx2
+resend[async]==2.53.2
 librosa
 resemblyzer
 opencv-python
