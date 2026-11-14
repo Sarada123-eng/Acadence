@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.associations import classroom_students
-from app.models.student import Student
+from app.models.student import ACTIVE_STATUS, Student
 
 
 def get_classroom_biometric_embeddings(
@@ -27,7 +27,10 @@ def get_classroom_biometric_embeddings(
             classroom_students,
             Student.id == classroom_students.c.student_id,
         )
-        .where(classroom_students.c.classroom_id == classroom_id)
+        .where(
+            classroom_students.c.classroom_id == classroom_id,
+            Student.account_status == ACTIVE_STATUS,
+        )
     )
 
     return list(db.execute(statement).all())
