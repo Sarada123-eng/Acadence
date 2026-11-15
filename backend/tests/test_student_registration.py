@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 import importlib.util
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret")
@@ -24,6 +24,7 @@ from app.models.student import (
     Student,
 )
 from app.routers import students as students_router
+from app.services.email_service import EmailDeliveryError
 from app.services.student_service import (
     StudentRegistrationConfigurationError,
     StudentNotEligibleError,
@@ -239,7 +240,11 @@ class StudentRegistrationApiTests(unittest.IsolatedAsyncioTestCase):
             students_router,
             "register_pending_student",
             return_value=pending_student,
-        ):
+        ), patch.object(
+            students_router,
+            "issue_student_email_otp",
+            new_callable=AsyncMock,
+        ) as issue_otp:
             response = await self.request(
                 "POST",
                 "/students/registrations",
@@ -258,6 +263,122 @@ class StudentRegistrationApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(body["account_status"], PENDING_VERIFICATION_STATUS)
         self.assertNotIn("id", body)
+        issue_otp.assert_awaited_once_with(self.db, pending_student)
+        self.db.commit.assert_called_once()
+
+    async def test_registration_issues_otp_with_clean_session(self) -> None:
+        pending_student = Student(
+            id=42,
+            registration_reference="12345678-1234-5678-1234-567812345678",
+            account_status=PENDING_VERIFICATION_STATUS,
+            pending_registration_expires_at=datetime.now(timezone.utc)
+            + timedelta(minutes=30),
+        )
+        self.db.in_transaction.return_value = False
+
+        def assert_clean_session(db, student):
+            self.assertIs(db, self.db)
+            self.assertIs(student, pending_student)
+            self.assertFalse(db.in_transaction())
+
+        with patch.object(
+            students_router,
+            "register_pending_student",
+            return_value=pending_student,
+        ), patch.object(
+            students_router,
+            "issue_student_email_otp",
+            new_callable=AsyncMock,
+            side_effect=assert_clean_session,
+        ):
+            response = await self.request(
+                "POST",
+                "/students/registrations",
+                json={
+                    "name": "Student Name",
+                    "institutional_student_id": "S001",
+                    "institutional_email": "student@example.edu",
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.db.commit.assert_called_once()
+
+    async def test_existing_pending_registration_is_reused_and_otp_is_rotated(
+        self,
+    ) -> None:
+        pending_student = Student(
+            id=42,
+            registration_reference="12345678-1234-5678-1234-567812345678",
+            account_status=PENDING_VERIFICATION_STATUS,
+            pending_registration_expires_at=datetime.now(timezone.utc)
+            + timedelta(minutes=30),
+        )
+        with patch.object(
+            students_router,
+            "register_pending_student",
+            return_value=pending_student,
+        ), patch.object(
+            students_router,
+            "issue_student_email_otp",
+            new_callable=AsyncMock,
+            return_value={
+                "challenge_id": "rotated-challenge",
+                "provider_message_id": "provider-message",
+            },
+        ) as issue_otp:
+            response = await self.request(
+                "POST",
+                "/students/registrations",
+                json={
+                    "name": "Student Name",
+                    "institutional_student_id": "S001",
+                    "institutional_email": "student@example.edu",
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        issue_otp.assert_awaited_once_with(self.db, pending_student)
+        self.db.add.assert_not_called()
+
+    async def test_email_delivery_failure_keeps_registration_pending(self) -> None:
+        pending_student = Student(
+            id=42,
+            registration_reference="12345678-1234-5678-1234-567812345678",
+            account_status=PENDING_VERIFICATION_STATUS,
+            pending_registration_expires_at=datetime.now(timezone.utc)
+            + timedelta(minutes=30),
+        )
+        with patch.object(
+            students_router,
+            "register_pending_student",
+            return_value=pending_student,
+        ), patch.object(
+            students_router,
+            "issue_student_email_otp",
+            new_callable=AsyncMock,
+            side_effect=EmailDeliveryError(
+                "Email provider failed to send the message."
+            ),
+        ):
+            response = await self.request(
+                "POST",
+                "/students/registrations",
+                json={
+                    "name": "Student Name",
+                    "institutional_student_id": "S001",
+                    "institutional_email": "student@example.edu",
+                },
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json()["detail"],
+            "Verification email could not be delivered.",
+        )
+        self.assertEqual(pending_student.account_status, PENDING_VERIFICATION_STATUS)
+        self.assertIsNone(pending_student.email_verified_at)
+        self.db.add.assert_not_called()
 
     async def test_name_only_registration_route_no_longer_exists(self) -> None:
         response = await self.request(
