@@ -344,11 +344,12 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.session_factory() as session_a, self.session_factory() as session_b:
             stale_student = session_a.get(Student, 11)
-            session_a.rollback()
+            session_a.commit()
             updated_student = session_b.get(Student, 11)
             updated_student.account_status = "active"
             session_b.commit()
 
+            self.assertEqual(stale_student.account_status, PENDING_VERIFICATION_STATUS)
             with self.assertRaises(StudentOtpValidationError):
                 await issue_student_email_otp(
                     session_a,
