@@ -4,8 +4,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session
 
 from app.database.connection import Settings, settings
@@ -24,6 +25,10 @@ class StudentOtpConfigurationError(RuntimeError):
 
 class StudentOtpValidationError(ValueError):
     """Raised when a student cannot receive an OTP challenge."""
+
+
+class StudentOtpPersistenceError(RuntimeError):
+    """Raised when OTP challenge state cannot be persisted safely."""
 
 
 def generate_student_email_otp() -> str:
@@ -87,59 +92,85 @@ async def issue_student_email_otp(
     student: Student,
     app_settings: Settings = settings,
 ) -> dict[str, str]:
-    if student.id is None:
-        raise StudentOtpValidationError("Student does not exist.")
+    """Issue an OTP using one transaction for the locked Student mutation.
 
-    persisted_student = db.get(Student, student.id)
-    if persisted_student is None:
+    The transaction is committed before the external email request, so the
+    Student row lock is never held while waiting for the provider.
+    """
+    student_identity = sqlalchemy_inspect(student).identity
+    student_id = (
+        student_identity[0]
+        if student_identity is not None
+        else student.id
+    )
+    if student_id is None:
         raise StudentOtpValidationError("Student does not exist.")
-    if persisted_student.account_status != PENDING_VERIFICATION_STATUS:
-        raise StudentOtpValidationError(
-            "Only pending students can receive an email verification code."
-        )
-
-    recipient = (persisted_student.institutional_email or "").strip()
-    if not recipient:
-        raise StudentOtpValidationError(
-            "A valid institutional email is required for verification."
-        )
 
     _validate_otp_configuration(app_settings)
 
     challenge_id = str(uuid4())
     otp = generate_student_email_otp()
     now = datetime.now(timezone.utc)
-    challenge = db.scalar(
-        select(StudentEmailOtpChallenge).where(
-            StudentEmailOtpChallenge.student_id == persisted_student.id
-        )
-    )
-    if challenge is None:
-        challenge = StudentEmailOtpChallenge(
-            id=challenge_id,
-            student_id=persisted_student.id,
-        )
-        db.add(challenge)
-    else:
-        challenge.id = challenge_id
+    try:
+        with db.begin():
+            persisted_student = db.scalar(
+                select(Student)
+                .where(Student.id == student_id)
+                .with_for_update()
+            )
+            if persisted_student is None:
+                raise StudentOtpValidationError("Student does not exist.")
+            if persisted_student.account_status != PENDING_VERIFICATION_STATUS:
+                raise StudentOtpValidationError(
+                    "Only pending students can receive an email verification code."
+                )
 
-    challenge.otp_digest = create_student_email_otp_digest(
-        otp,
-        challenge_id,
-        persisted_student.id,
-        app_settings.STUDENT_EMAIL_OTP_SECRET.strip(),
-    )
-    challenge.expires_at = now + timedelta(
-        minutes=app_settings.STUDENT_EMAIL_OTP_EXPIRE_MINUTES,
-    )
-    challenge.attempt_count = 0
-    challenge.created_at = now
-    challenge.last_sent_at = now
-    challenge.consumed_at = None
-    challenge.invalidated_at = None
+            recipient = (persisted_student.institutional_email or "").strip()
+            if not recipient:
+                raise StudentOtpValidationError(
+                    "A valid institutional email is required for verification."
+                )
 
-    db.commit()
-    db.refresh(challenge)
+            challenge = db.scalar(
+                select(StudentEmailOtpChallenge).where(
+                    StudentEmailOtpChallenge.student_id == student_id
+                )
+            )
+            if challenge is None:
+                challenge = StudentEmailOtpChallenge(
+                    id=challenge_id,
+                    student_id=student_id,
+                )
+                db.add(challenge)
+            else:
+                challenge.id = challenge_id
+
+            challenge.otp_digest = create_student_email_otp_digest(
+                otp,
+                challenge_id,
+                student_id,
+                app_settings.STUDENT_EMAIL_OTP_SECRET.strip(),
+            )
+            challenge.expires_at = now + timedelta(
+                minutes=app_settings.STUDENT_EMAIL_OTP_EXPIRE_MINUTES,
+            )
+            challenge.attempt_count = 0
+            challenge.created_at = now
+            challenge.last_sent_at = None
+            challenge.consumed_at = None
+            challenge.invalidated_at = None
+    except (StudentOtpValidationError, StudentOtpConfigurationError):
+        raise
+    except IntegrityError as exc:
+        db.rollback()
+        raise StudentOtpPersistenceError(
+            "The OTP challenge could not be saved."
+        ) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise StudentOtpPersistenceError(
+            "The OTP challenge could not be saved."
+        ) from exc
 
     text_body, html_body = _email_bodies(
         otp,
@@ -154,9 +185,18 @@ async def issue_student_email_otp(
             app_settings,
         )
     except (EmailConfigurationError, EmailDeliveryError):
-        challenge.invalidated_at = datetime.now(timezone.utc)
         try:
-            db.commit()
+            with db.begin():
+                db.execute(
+                    update(StudentEmailOtpChallenge)
+                    .where(
+                        StudentEmailOtpChallenge.id == challenge_id,
+                        StudentEmailOtpChallenge.student_id == student_id,
+                        StudentEmailOtpChallenge.consumed_at.is_(None),
+                        StudentEmailOtpChallenge.invalidated_at.is_(None),
+                    )
+                    .values(invalidated_at=datetime.now(timezone.utc))
+                )
         except SQLAlchemyError as compensation_error:
             db.rollback()
             raise EmailDeliveryError(
@@ -164,7 +204,25 @@ async def issue_student_email_otp(
             ) from compensation_error
         raise
 
+    try:
+        with db.begin():
+            db.execute(
+                update(StudentEmailOtpChallenge)
+                .where(
+                    StudentEmailOtpChallenge.id == challenge_id,
+                    StudentEmailOtpChallenge.student_id == student_id,
+                    StudentEmailOtpChallenge.consumed_at.is_(None),
+                    StudentEmailOtpChallenge.invalidated_at.is_(None),
+                )
+                .values(last_sent_at=datetime.now(timezone.utc))
+            )
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise StudentOtpPersistenceError(
+            "The OTP challenge delivery status could not be saved."
+        ) from exc
+
     return {
-        "challenge_id": challenge.id,
+        "challenge_id": challenge_id,
         "provider_message_id": provider_message_id,
     }

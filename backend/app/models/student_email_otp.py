@@ -62,10 +62,9 @@ class StudentEmailOtpChallenge(Base):
         default=utc_now,
     )
 
-    last_sent_at: Mapped[datetime] = mapped_column(
+    last_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
-        nullable=False,
-        default=utc_now,
+        nullable=True,
     )
 
     consumed_at: Mapped[datetime | None] = mapped_column(

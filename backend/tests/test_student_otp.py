@@ -10,14 +10,19 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret")
 
 from sqlalchemy import (
     Column,
+    DateTime,
+    JSON,
     Integer,
     MetaData,
+    String,
     Table,
     create_engine,
     insert,
     inspect,
+    select,
 )
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 
 from app.database.connection import Settings
 from app.models.student import PENDING_VERIFICATION_STATUS, Student
@@ -36,21 +41,36 @@ class FakeSession:
         self.student = student
         self.challenge = challenge
         self.commits = 0
+        self.scalar_calls = 0
 
-    def get(self, model, student_id):
-        return self.student if model is Student and student_id == self.student.id else None
+    class _Transaction:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        def __enter__(self):
+            return self.session
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            if exc_type is None:
+                self.session.commits += 1
+            return False
 
     def scalar(self, statement):
-        return self.challenge
+        self.scalar_calls += 1
+        return self.student if self.scalar_calls == 1 else self.challenge
 
     def add(self, challenge):
         self.challenge = challenge
 
-    def commit(self):
-        self.commits += 1
+    def begin(self):
+        return self._Transaction(self)
 
-    def refresh(self, challenge):
-        return None
+    def execute(self, statement):
+        if self.challenge is not None:
+            if "invalidated_at" in str(statement):
+                self.challenge.invalidated_at = datetime.now(timezone.utc)
+            else:
+                self.challenge.last_sent_at = datetime.now(timezone.utc)
 
     def rollback(self):
         return None
@@ -66,6 +86,21 @@ def load_migration():
     spec = importlib.util.spec_from_file_location("student_otp_migration", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("Unable to load OTP migration.")
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
+def load_nullable_migration():
+    path = (
+        Path(__file__).parents[1]
+        / "alembic"
+        / "versions"
+        / "b2c3d4e5f6a7_allow_unsent_otp_challenges.py"
+    )
+    spec = importlib.util.spec_from_file_location("student_otp_nullable_migration", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load nullable OTP migration.")
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     return migration
@@ -138,7 +173,7 @@ class StudentOtpIssuanceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["provider_message_id"], "email-1")
         self.assertNotIn("otp", result)
-        self.assertEqual(session.commits, 1)
+        self.assertEqual(session.commits, 2)
         arguments = send_email.await_args.args
         self.assertEqual(arguments[0], "student@example.edu")
         self.assertRegex(arguments[2], r"\d{6}")
@@ -169,6 +204,98 @@ class StudentOtpIssuanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.commits, 0)
 
 
+class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite+pysqlite:///:memory:")
+        metadata = MetaData()
+        Table(
+            "students",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("name", String(100), nullable=False),
+            Column("institutional_student_id", String(100)),
+            Column("normalized_student_id", String(100)),
+            Column("institutional_email", String(320)),
+            Column("normalized_email", String(320)),
+            Column("registration_reference", String(36)),
+            Column("pending_registration_expires_at", DateTime(timezone=True)),
+            Column("account_status", String(32), nullable=False),
+            Column("email_verified_at", DateTime(timezone=True)),
+            Column("identity_verified_at", DateTime(timezone=True)),
+            Column("face_embedding", JSON),
+            Column("voice_embedding", JSON),
+        )
+        metadata.create_all(self.engine)
+        StudentEmailOtpChallenge.__table__.create(self.engine)
+        self.session_factory = sessionmaker(
+            bind=self.engine,
+            expire_on_commit=False,
+        )
+        with self.session_factory() as session:
+            session.add(
+                Student(
+                    id=11,
+                    name="Persisted Student",
+                    institutional_email="persisted@example.edu",
+                    account_status=PENDING_VERIFICATION_STATUS,
+                )
+            )
+            session.commit()
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    @patch("app.services.student_otp_service.send_email", new_callable=AsyncMock)
+    async def test_real_session_creates_and_rotates_one_challenge(
+        self,
+        send_email: AsyncMock,
+    ) -> None:
+        send_email.return_value = "email-1"
+        app_settings = Settings(
+            DATABASE_URL="sqlite+pysqlite:///:memory:",
+            JWT_SECRET_KEY="test-only-secret",
+            STUDENT_EMAIL_OTP_SECRET="s" * 32,
+            STUDENT_EMAIL_OTP_EXPIRE_MINUTES=5,
+        )
+
+        with self.session_factory() as session:
+            student = session.get(Student, 11)
+            session.rollback()
+            first = await issue_student_email_otp(session, student, app_settings)
+            first_challenge = session.scalar(
+                select(StudentEmailOtpChallenge).where(
+                    StudentEmailOtpChallenge.student_id == 11
+                )
+            )
+            first_id = first_challenge.id
+            first_challenge.attempt_count = 2
+            first_challenge.consumed_at = datetime.now(timezone.utc)
+            session.commit()
+
+            second = await issue_student_email_otp(session, student, app_settings)
+            second_challenge = session.scalar(
+                select(StudentEmailOtpChallenge).where(
+                    StudentEmailOtpChallenge.student_id == 11
+                )
+            )
+
+            self.assertEqual(first["provider_message_id"], "email-1")
+            self.assertNotEqual(first_id, second["challenge_id"])
+            self.assertEqual(second_challenge.id, second["challenge_id"])
+            self.assertEqual(second_challenge.attempt_count, 0)
+            self.assertIsNone(second_challenge.consumed_at)
+            self.assertIsNone(second_challenge.invalidated_at)
+            self.assertIsNotNone(second_challenge.last_sent_at)
+            self.assertEqual(
+                session.query(StudentEmailOtpChallenge).count(),
+                1,
+            )
+            self.assertNotIn(
+                send_email.await_args_list[0].args[2].split("code is ")[1].split(".")[0],
+                second_challenge.otp_digest,
+            )
+
+
 class StudentOtpMigrationTests(unittest.TestCase):
     def test_unique_student_constraint_is_enforced_and_downgrade_is_scoped(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -180,15 +307,22 @@ class StudentOtpMigrationTests(unittest.TestCase):
         )
         metadata.create_all(engine)
         migration = load_migration()
-        with engine.begin() as connection:
-            from alembic.migration import MigrationContext
-            from alembic.operations import Operations
+        nullable_migration = load_nullable_migration()
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
 
-            context = MigrationContext.configure(connection)
-            with Operations.context(context):
-                migration.upgrade()
+        def run_migration(target, operation: str) -> None:
+            with engine.begin() as connection:
+                context = MigrationContext.configure(connection)
+                with Operations.context(context):
+                    getattr(target, operation)()
+
+        run_migration(migration, "upgrade")
+        run_migration(nullable_migration, "upgrade")
+        with engine.begin() as connection:
             connection.execute(insert(students).values(id=1))
             otp = Table("student_email_otp_challenges", MetaData(), autoload_with=engine)
+            self.assertTrue(otp.c.last_sent_at.nullable)
             values = {
                 "id": "challenge-1",
                 "student_id": 1,
@@ -201,8 +335,8 @@ class StudentOtpMigrationTests(unittest.TestCase):
             connection.execute(insert(otp).values(values))
             with self.assertRaises(IntegrityError):
                 connection.execute(insert(otp).values({**values, "id": "challenge-2"}))
-            with Operations.context(context):
-                migration.downgrade()
+        run_migration(nullable_migration, "downgrade")
+        run_migration(migration, "downgrade")
 
         self.assertNotIn(
             "student_email_otp_challenges",
