@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database.connection import Base, settings
 from app.models.student import Student  # noqa: F401
+from app.models.student_email_otp import StudentEmailOtpChallenge  # noqa: F401
 from app.models.subject import Subject  # noqa: F401
 from app.models.teacher import Teacher  # noqa: F401
 from app.models.classroom import Classroom  # noqa: F401

@@ -35,6 +35,7 @@ def normalize_email(value: str) -> str:
 
 if TYPE_CHECKING:
     from app.models.classroom import Classroom
+    from app.models.student_email_otp import StudentEmailOtpChallenge
     from app.models.subject import Subject
 
 
@@ -142,4 +143,11 @@ class Student(Base):
         secondary=classroom_students,
         back_populates="students",
         passive_deletes=True,
+    )
+
+    email_otp_challenge: Mapped["StudentEmailOtpChallenge | None"] = relationship(
+        "StudentEmailOtpChallenge",
+        back_populates="student",
+        uselist=False,
+        cascade="all, delete-orphan",
     )

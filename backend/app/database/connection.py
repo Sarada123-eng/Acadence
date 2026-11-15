@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str = ""
     EMAIL_FROM_ADDRESS: str = ""
     EMAIL_FROM_NAME: str = ""
+    STUDENT_EMAIL_OTP_SECRET: str = ""
+    STUDENT_EMAIL_OTP_EXPIRE_MINUTES: int = Field(default=5, gt=0)
+    STUDENT_EMAIL_OTP_MAX_ATTEMPTS: int = Field(default=5, gt=0)
 
     class Config:
         env_file = ".env"
