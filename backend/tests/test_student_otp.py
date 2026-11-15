@@ -3,6 +3,7 @@ import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event, Thread
 from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -429,6 +430,76 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     "123456",
                     self.settings(),
                 )
+
+    def test_expiry_is_checked_after_student_and_challenge_locks(self) -> None:
+        before_lock = datetime.now(timezone.utc)
+        after_lock = before_lock + timedelta(seconds=2)
+        student = Student(
+            id=11,
+            name="Locked Student",
+            registration_reference="11111111-1111-1111-1111-111111111111",
+            pending_registration_expires_at=before_lock + timedelta(seconds=1),
+            account_status=PENDING_VERIFICATION_STATUS,
+        )
+        challenge = StudentEmailOtpChallenge(
+            id="challenge-for-verification",
+            student_id=11,
+            otp_digest=create_student_email_otp_digest(
+                "123456",
+                "challenge-for-verification",
+                11,
+                "s" * 32,
+            ),
+            expires_at=before_lock + timedelta(seconds=1),
+            last_sent_at=before_lock,
+        )
+        session = FakeSession(student, challenge)
+        student_lock_started = Event()
+        release_student_lock = Event()
+        challenge_locked = Event()
+        outcomes = []
+        original_scalar = session.scalar
+
+        def scalar(statement):
+            if session.scalar_calls == 0:
+                student_lock_started.set()
+                if not release_student_lock.wait(timeout=2):
+                    raise RuntimeError("Timed out waiting to release student lock.")
+            result = original_scalar(statement)
+            if session.scalar_calls == 2:
+                challenge_locked.set()
+            return result
+
+        session.scalar = scalar
+
+        def verify() -> None:
+            try:
+                verify_student_email_otp(
+                    session,
+                    student.registration_reference,
+                    "123456",
+                    self.settings(),
+                )
+            except Exception as exc:
+                outcomes.append(exc)
+
+        with patch("app.services.student_otp_service.datetime") as service_datetime:
+            def capture_now(tz):
+                if not challenge_locked.is_set():
+                    raise AssertionError("Timestamp captured before challenge lock.")
+                return after_lock
+
+            service_datetime.now.side_effect = capture_now
+            thread = Thread(target=verify)
+            thread.start()
+            self.assertTrue(student_lock_started.wait(timeout=2))
+            release_student_lock.set()
+            thread.join(timeout=2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(outcomes), 1)
+        self.assertIsInstance(outcomes[0], StudentOtpVerificationError)
+        self.assertEqual(session.commits, 0)
 
     def test_invalid_otp_persists_attempts_and_invalidates_at_limit(self) -> None:
         with self.session_factory() as session:

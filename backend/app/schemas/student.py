@@ -57,7 +57,7 @@ class StudentEmailOtpVerificationRequest(BaseModel):
     otp: str = Field(
         min_length=6,
         max_length=6,
-        pattern=r"^\d{6}$",
+        pattern=r"^[0-9]{6}$",
     )
 
 

@@ -113,11 +113,10 @@ def verify_student_email_otp(
         raise StudentOtpTransactionError(
             "OTP verification requires a clean database session."
         )
-    if len(otp) != 6 or not otp.isdigit():
+    if len(otp) != 6 or not all("0" <= digit <= "9" for digit in otp):
         raise StudentOtpVerificationError("The verification code is invalid.")
 
     _validate_otp_configuration(app_settings)
-    now = datetime.now(timezone.utc)
     failed_attempt = False
 
     try:
@@ -131,13 +130,7 @@ def verify_student_email_otp(
                 .with_for_update()
                 .execution_options(populate_existing=True)
             )
-            if (
-                student is None
-                or student.account_status != PENDING_VERIFICATION_STATUS
-                or student.email_verified_at is not None
-                or student.pending_registration_expires_at is None
-                or _is_expired(student.pending_registration_expires_at, now)
-            ):
+            if student is None:
                 raise StudentOtpVerificationError(
                     "The verification code is invalid or has expired."
                 )
@@ -148,6 +141,16 @@ def verify_student_email_otp(
                 .with_for_update()
                 .execution_options(populate_existing=True)
             )
+            now = datetime.now(timezone.utc)
+            if (
+                student.account_status != PENDING_VERIFICATION_STATUS
+                or student.email_verified_at is not None
+                or student.pending_registration_expires_at is None
+                or _is_expired(student.pending_registration_expires_at, now)
+            ):
+                raise StudentOtpVerificationError(
+                    "The verification code is invalid or has expired."
+                )
             if (
                 challenge is None
                 or challenge.last_sent_at is None
