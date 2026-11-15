@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 from uuid import uuid4
 
 from sqlalchemy import select, update
@@ -10,7 +11,7 @@ from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session
 
 from app.database.connection import Settings, settings
-from app.models.student import PENDING_VERIFICATION_STATUS, Student
+from app.models.student import ACTIVE_STATUS, PENDING_VERIFICATION_STATUS, Student
 from app.models.student_email_otp import StudentEmailOtpChallenge
 from app.services.email_service import (
     EmailConfigurationError,
@@ -33,6 +34,10 @@ class StudentOtpPersistenceError(RuntimeError):
 
 class StudentOtpTransactionError(RuntimeError):
     """Raised when OTP issuance is called with an active Session transaction."""
+
+
+class StudentOtpVerificationError(ValueError):
+    """Raised when an OTP cannot be used to verify a registration."""
 
 
 def generate_student_email_otp() -> str:
@@ -89,6 +94,106 @@ def _email_bodies(otp: str, expires_in_minutes: int) -> tuple[str, str]:
         "If you did not request verification, please ignore this message.</p>"
     )
     return text_body, html_body
+
+
+def _is_expired(value: datetime, now: datetime) -> bool:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value <= now
+
+
+def verify_student_email_otp(
+    db: Session,
+    registration_reference: UUID | str,
+    otp: str,
+    app_settings: Settings = settings,
+) -> dict[str, str]:
+    """Verify an OTP and activate its pending Student atomically."""
+    if db.in_transaction():
+        raise StudentOtpTransactionError(
+            "OTP verification requires a clean database session."
+        )
+    if len(otp) != 6 or not otp.isdigit():
+        raise StudentOtpVerificationError("The verification code is invalid.")
+
+    _validate_otp_configuration(app_settings)
+    now = datetime.now(timezone.utc)
+    failed_attempt = False
+
+    try:
+        with db.begin():
+            student = db.scalar(
+                select(Student)
+                .where(
+                    Student.registration_reference
+                    == str(registration_reference)
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if (
+                student is None
+                or student.account_status != PENDING_VERIFICATION_STATUS
+                or student.email_verified_at is not None
+                or student.pending_registration_expires_at is None
+                or _is_expired(student.pending_registration_expires_at, now)
+            ):
+                raise StudentOtpVerificationError(
+                    "The verification code is invalid or has expired."
+                )
+
+            challenge = db.scalar(
+                select(StudentEmailOtpChallenge)
+                .where(StudentEmailOtpChallenge.student_id == student.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if (
+                challenge is None
+                or challenge.last_sent_at is None
+                or _is_expired(challenge.expires_at, now)
+                or challenge.consumed_at is not None
+                or challenge.invalidated_at is not None
+                or challenge.attempt_count
+                >= app_settings.STUDENT_EMAIL_OTP_MAX_ATTEMPTS
+            ):
+                raise StudentOtpVerificationError(
+                    "The verification code is invalid or has expired."
+                )
+
+            if not verify_student_email_otp_digest(
+                otp,
+                challenge,
+                student.id,
+                app_settings.STUDENT_EMAIL_OTP_SECRET.strip(),
+            ):
+                challenge.attempt_count += 1
+                if (
+                    challenge.attempt_count
+                    >= app_settings.STUDENT_EMAIL_OTP_MAX_ATTEMPTS
+                ):
+                    challenge.invalidated_at = now
+                failed_attempt = True
+            else:
+                challenge.consumed_at = now
+                student.email_verified_at = now
+                student.account_status = ACTIVE_STATUS
+    except StudentOtpVerificationError:
+        raise
+    except SQLAlchemyError as exc:
+        raise StudentOtpPersistenceError(
+            "The verification result could not be saved."
+        ) from exc
+
+    if failed_attempt:
+        raise StudentOtpVerificationError(
+            "The verification code is invalid or has expired."
+        )
+
+    return {
+        "registration_reference": str(registration_reference),
+        "account_status": ACTIVE_STATUS,
+    }
 
 
 async def issue_student_email_otp(

@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.schemas.student import (
+    StudentEmailOtpVerificationRequest,
+    StudentEmailOtpVerificationResponse,
     StudentRegistrationCreate,
     StudentRegistrationResponse,
 )
@@ -10,6 +12,13 @@ from app.services.student_service import (
     StudentRegistrationConfigurationError,
     StudentRegistrationValidationError,
     register_pending_student,
+)
+from app.services.student_otp_service import (
+    StudentOtpConfigurationError,
+    StudentOtpPersistenceError,
+    StudentOtpTransactionError,
+    StudentOtpVerificationError,
+    verify_student_email_otp,
 )
 
 
@@ -53,3 +62,41 @@ def register_pending_student_account(
         account_status=created_student.account_status,
         pending_registration_expires_at=created_student.pending_registration_expires_at,
     )
+
+
+@router.post(
+    "/registrations/verify-email",
+    response_model=StudentEmailOtpVerificationResponse,
+)
+def verify_student_registration_email(
+    verification: StudentEmailOtpVerificationRequest,
+    db: Session = Depends(get_db),
+) -> StudentEmailOtpVerificationResponse:
+    try:
+        result = verify_student_email_otp(
+            db,
+            verification.registration_reference,
+            verification.otp,
+        )
+    except StudentOtpVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except StudentOtpTransactionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except StudentOtpConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except StudentOtpPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Verification could not be completed.",
+        ) from exc
+
+    return StudentEmailOtpVerificationResponse(**result)

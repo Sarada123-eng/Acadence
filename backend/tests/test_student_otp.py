@@ -1,7 +1,7 @@
 import importlib.util
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -25,15 +25,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.database.connection import Settings
-from app.models.student import PENDING_VERIFICATION_STATUS, Student
+from app.models.student import ACTIVE_STATUS, PENDING_VERIFICATION_STATUS, Student
 from app.models.student_email_otp import StudentEmailOtpChallenge
 from app.services.email_service import EmailDeliveryError
 from app.services.student_otp_service import (
     StudentOtpTransactionError,
     StudentOtpValidationError,
+    StudentOtpVerificationError,
     create_student_email_otp_digest,
     generate_student_email_otp,
     issue_student_email_otp,
+    verify_student_email_otp,
     verify_student_email_otp_digest,
 )
 
@@ -242,6 +244,9 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     id=11,
                     name="Persisted Student",
                     institutional_email="persisted@example.edu",
+                    registration_reference="11111111-1111-1111-1111-111111111111",
+                    pending_registration_expires_at=datetime.now(timezone.utc)
+                    + timedelta(minutes=30),
                     account_status=PENDING_VERIFICATION_STATUS,
                 )
             )
@@ -249,6 +254,31 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.engine.dispose()
+
+    def add_challenge(
+        self,
+        session,
+        otp: str = "123456",
+        *,
+        expires_at: datetime | None = None,
+        sent: bool = True,
+    ) -> StudentEmailOtpChallenge:
+        now = datetime.now(timezone.utc)
+        challenge = StudentEmailOtpChallenge(
+            id="challenge-for-verification",
+            student_id=11,
+            otp_digest=create_student_email_otp_digest(
+                otp,
+                "challenge-for-verification",
+                11,
+                "s" * 32,
+            ),
+            expires_at=expires_at or now + timedelta(minutes=5),
+            last_sent_at=now if sent else None,
+        )
+        session.add(challenge)
+        session.commit()
+        return challenge
 
     @patch("app.services.student_otp_service.send_email", new_callable=AsyncMock)
     async def test_real_session_creates_and_rotates_one_challenge(
@@ -359,6 +389,198 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(stale_student.account_status, "active")
             send_email.assert_not_awaited()
+
+    def settings(self, **overrides) -> Settings:
+        values = {
+            "DATABASE_URL": "sqlite+pysqlite:///:memory:",
+            "JWT_SECRET_KEY": "test-only-secret",
+            "STUDENT_EMAIL_OTP_SECRET": "s" * 32,
+        }
+        values.update(overrides)
+        return Settings(**values)
+
+    def test_correct_otp_activates_student_and_consumes_challenge(self) -> None:
+        with self.session_factory() as session:
+            self.add_challenge(session)
+
+            result = verify_student_email_otp(
+                session,
+                "11111111-1111-1111-1111-111111111111",
+                "123456",
+                self.settings(),
+            )
+
+            student = session.get(Student, 11)
+            challenge = session.get(
+                StudentEmailOtpChallenge,
+                "challenge-for-verification",
+            )
+            self.assertEqual(result["account_status"], ACTIVE_STATUS)
+            self.assertEqual(student.account_status, ACTIVE_STATUS)
+            self.assertIsNotNone(student.email_verified_at)
+            self.assertIsNone(student.identity_verified_at)
+            self.assertIsNotNone(challenge.consumed_at)
+
+            session.commit()
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+
+    def test_invalid_otp_persists_attempts_and_invalidates_at_limit(self) -> None:
+        with self.session_factory() as session:
+            self.add_challenge(session)
+            app_settings = self.settings(STUDENT_EMAIL_OTP_MAX_ATTEMPTS=2)
+
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "000000",
+                    app_settings,
+                )
+            challenge = session.get(
+                StudentEmailOtpChallenge,
+                "challenge-for-verification",
+            )
+            self.assertEqual(challenge.attempt_count, 1)
+            session.commit()
+
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "000000",
+                    app_settings,
+                )
+            student = session.get(Student, 11)
+            challenge = session.get(
+                StudentEmailOtpChallenge,
+                "challenge-for-verification",
+            )
+            self.assertEqual(challenge.attempt_count, 2)
+            self.assertIsNotNone(challenge.invalidated_at)
+            self.assertEqual(student.account_status, PENDING_VERIFICATION_STATUS)
+            self.assertIsNone(student.email_verified_at)
+
+    def test_unusable_challenge_and_expired_registration_are_rejected(self) -> None:
+        with self.session_factory() as session:
+            self.add_challenge(session, sent=False)
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+            session.rollback()
+
+            student = session.get(Student, 11)
+            challenge = session.get(
+                StudentEmailOtpChallenge,
+                "challenge-for-verification",
+            )
+            student.pending_registration_expires_at = (
+                datetime.now(timezone.utc) - timedelta(minutes=1)
+            )
+            challenge.expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+            challenge.last_sent_at = datetime.now(timezone.utc)
+            session.commit()
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+            session.rollback()
+
+            student = session.get(Student, 11)
+            challenge = session.get(
+                StudentEmailOtpChallenge,
+                "challenge-for-verification",
+            )
+            student.pending_registration_expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=5)
+            )
+            challenge.last_sent_at = datetime.now(timezone.utc)
+            challenge.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            session.commit()
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+
+    def test_missing_consumed_invalidated_and_exhausted_challenges_are_rejected(
+        self,
+    ) -> None:
+        with self.session_factory() as session:
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+
+            self.add_challenge(session)
+            challenge = session.get(
+                StudentEmailOtpChallenge,
+                "challenge-for-verification",
+            )
+            challenge.consumed_at = datetime.now(timezone.utc)
+            session.commit()
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+
+            challenge.consumed_at = None
+            challenge.invalidated_at = datetime.now(timezone.utc)
+            session.commit()
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+
+            challenge.invalidated_at = None
+            challenge.attempt_count = self.settings().STUDENT_EMAIL_OTP_MAX_ATTEMPTS
+            session.commit()
+            with self.assertRaises(StudentOtpVerificationError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+
+    def test_active_caller_transaction_is_rejected_without_rollback(self) -> None:
+        with self.session_factory() as session:
+            student = session.get(Student, 11)
+            student.name = "Caller-owned verification change"
+
+            with self.assertRaises(StudentOtpTransactionError):
+                verify_student_email_otp(
+                    session,
+                    "11111111-1111-1111-1111-111111111111",
+                    "123456",
+                    self.settings(),
+                )
+
+            self.assertTrue(session.in_transaction())
+            self.assertEqual(student.name, "Caller-owned verification change")
 
 
 class StudentOtpMigrationTests(unittest.TestCase):

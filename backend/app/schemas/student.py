@@ -50,3 +50,17 @@ class StudentRegistrationResponse(BaseModel):
     registration_reference: UUID
     account_status: str
     pending_registration_expires_at: datetime
+
+
+class StudentEmailOtpVerificationRequest(BaseModel):
+    registration_reference: UUID
+    otp: str = Field(
+        min_length=6,
+        max_length=6,
+        pattern=r"^\d{6}$",
+    )
+
+
+class StudentEmailOtpVerificationResponse(BaseModel):
+    registration_reference: UUID
+    account_status: str
