@@ -29,6 +29,8 @@ from app.models.student import PENDING_VERIFICATION_STATUS, Student
 from app.models.student_email_otp import StudentEmailOtpChallenge
 from app.services.email_service import EmailDeliveryError
 from app.services.student_otp_service import (
+    StudentOtpTransactionError,
+    StudentOtpValidationError,
     create_student_email_otp_digest,
     generate_student_email_otp,
     issue_student_email_otp,
@@ -64,6 +66,9 @@ class FakeSession:
 
     def begin(self):
         return self._Transaction(self)
+
+    def in_transaction(self):
+        return False
 
     def execute(self, statement):
         if self.challenge is not None:
@@ -250,7 +255,6 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self,
         send_email: AsyncMock,
     ) -> None:
-        send_email.return_value = "email-1"
         app_settings = Settings(
             DATABASE_URL="sqlite+pysqlite:///:memory:",
             JWT_SECRET_KEY="test-only-secret",
@@ -259,6 +263,11 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.session_factory() as session:
+            async def provider(*args, **kwargs):
+                self.assertFalse(session.in_transaction())
+                return "email-1"
+
+            send_email.side_effect = provider
             student = session.get(Student, 11)
             session.rollback()
             first = await issue_student_email_otp(session, student, app_settings)
@@ -294,6 +303,61 @@ class StudentOtpDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 send_email.await_args_list[0].args[2].split("code is ")[1].split(".")[0],
                 second_challenge.otp_digest,
             )
+
+    @patch("app.services.student_otp_service.send_email", new_callable=AsyncMock)
+    async def test_active_caller_transaction_is_not_modified(
+        self,
+        send_email: AsyncMock,
+    ) -> None:
+        with self.session_factory() as session:
+            student = session.get(Student, 11)
+            student.name = "Caller-owned change"
+
+            with self.assertRaises(StudentOtpTransactionError):
+                await issue_student_email_otp(
+                    session,
+                    student,
+                    Settings(
+                        DATABASE_URL="sqlite+pysqlite:///:memory:",
+                        JWT_SECRET_KEY="test-only-secret",
+                        STUDENT_EMAIL_OTP_SECRET="s" * 32,
+                    ),
+                )
+
+            self.assertTrue(session.in_transaction())
+            self.assertEqual(student.name, "Caller-owned change")
+            self.assertEqual(
+                session.query(StudentEmailOtpChallenge).count(),
+                0,
+            )
+            send_email.assert_not_awaited()
+
+    @patch("app.services.student_otp_service.send_email", new_callable=AsyncMock)
+    async def test_locked_query_refreshes_stale_student_state(
+        self,
+        send_email: AsyncMock,
+    ) -> None:
+        app_settings = Settings(
+            DATABASE_URL="sqlite+pysqlite:///:memory:",
+            JWT_SECRET_KEY="test-only-secret",
+            STUDENT_EMAIL_OTP_SECRET="s" * 32,
+        )
+        with self.session_factory() as session_a, self.session_factory() as session_b:
+            stale_student = session_a.get(Student, 11)
+            session_a.rollback()
+            updated_student = session_b.get(Student, 11)
+            updated_student.account_status = "active"
+            session_b.commit()
+
+            with self.assertRaises(StudentOtpValidationError):
+                await issue_student_email_otp(
+                    session_a,
+                    stale_student,
+                    app_settings,
+                )
+
+            self.assertEqual(stale_student.account_status, "active")
+            send_email.assert_not_awaited()
 
 
 class StudentOtpMigrationTests(unittest.TestCase):

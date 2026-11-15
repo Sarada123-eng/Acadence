@@ -31,6 +31,10 @@ class StudentOtpPersistenceError(RuntimeError):
     """Raised when OTP challenge state cannot be persisted safely."""
 
 
+class StudentOtpTransactionError(RuntimeError):
+    """Raised when OTP issuance is called with an active Session transaction."""
+
+
 def generate_student_email_otp() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
@@ -94,9 +98,18 @@ async def issue_student_email_otp(
 ) -> dict[str, str]:
     """Issue an OTP using one transaction for the locked Student mutation.
 
+    The caller must provide a clean Session. This service owns each database
+    transaction it opens and never joins, commits, or rolls back a caller-
+    owned transaction.
+
     The transaction is committed before the external email request, so the
     Student row lock is never held while waiting for the provider.
     """
+    if db.in_transaction():
+        raise StudentOtpTransactionError(
+            "OTP issuance requires a clean database session."
+        )
+
     student_identity = sqlalchemy_inspect(student).identity
     student_id = (
         student_identity[0]
@@ -117,6 +130,7 @@ async def issue_student_email_otp(
                 select(Student)
                 .where(Student.id == student_id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
             if persisted_student is None:
                 raise StudentOtpValidationError("Student does not exist.")
@@ -162,12 +176,10 @@ async def issue_student_email_otp(
     except (StudentOtpValidationError, StudentOtpConfigurationError):
         raise
     except IntegrityError as exc:
-        db.rollback()
         raise StudentOtpPersistenceError(
             "The OTP challenge could not be saved."
         ) from exc
     except SQLAlchemyError as exc:
-        db.rollback()
         raise StudentOtpPersistenceError(
             "The OTP challenge could not be saved."
         ) from exc
@@ -186,6 +198,10 @@ async def issue_student_email_otp(
         )
     except (EmailConfigurationError, EmailDeliveryError):
         try:
+            if db.in_transaction():
+                raise StudentOtpTransactionError(
+                    "OTP delivery compensation requires a clean database session."
+                )
             with db.begin():
                 db.execute(
                     update(StudentEmailOtpChallenge)
@@ -198,13 +214,16 @@ async def issue_student_email_otp(
                     .values(invalidated_at=datetime.now(timezone.utc))
                 )
         except SQLAlchemyError as compensation_error:
-            db.rollback()
             raise EmailDeliveryError(
                 "Email delivery failed and the OTP challenge could not be invalidated."
             ) from compensation_error
         raise
 
     try:
+        if db.in_transaction():
+            raise StudentOtpTransactionError(
+                "OTP delivery status update requires a clean database session."
+            )
         with db.begin():
             db.execute(
                 update(StudentEmailOtpChallenge)
@@ -217,7 +236,6 @@ async def issue_student_email_otp(
                 .values(last_sent_at=datetime.now(timezone.utc))
             )
     except SQLAlchemyError as exc:
-        db.rollback()
         raise StudentOtpPersistenceError(
             "The OTP challenge delivery status could not be saved."
         ) from exc
